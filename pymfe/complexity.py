@@ -8,7 +8,6 @@ import sklearn
 import sklearn.pipeline
 import scipy.spatial
 import igraph
-import gower
 
 from pymfe.general import MFEGeneral
 from pymfe.clustering import MFEClustering
@@ -476,7 +475,7 @@ class MFEComplexity:
             N_scaled = cls._scale_N(N=N)
 
         if metric == "gower":
-            norm_dist_mat = gower.gower_matrix(N_scaled)
+            norm_dist_mat = cls._calc_gower_dist(N_scaled, N_scaled)
             return norm_dist_mat, 0.0, 1.0
 
         norm_dist_mat = scipy.spatial.distance.cdist(
@@ -493,6 +492,60 @@ class MFEComplexity:
             norm_dist_mat = (norm_dist_mat - orig_dist_mat_min) / orig_dist_mat_ptp
 
         return norm_dist_mat, orig_dist_mat_min, orig_dist_mat_ptp
+
+    @staticmethod
+    def _calc_gower_dist(N_a: np.ndarray, N_b: np.ndarray) -> np.ndarray:
+        """Calculate the pairwise gower distances between ``N_a`` and ``N_b``.
+
+        For numerical data scaled to [0, 1] range, the gower distance is
+        equivalent to the Manhattan distance divided by the number of
+        attributes.
+        """
+        dist = scipy.spatial.distance.cdist(N_a, N_b, metric="cityblock")
+        return dist / max(N_a.shape[1], 1)
+
+    @staticmethod
+    def _calc_mst_edges(dist_mat: np.ndarray) -> t.Tuple[np.ndarray, np.ndarray]:
+        """Compute the minimum spanning tree edges using Prim's algorithm.
+
+        Implementation suited for dense (complete) graphs, running in
+        O(n^2) time and O(n) extra memory, where n is the number of
+        vertices.
+
+        Returns the indices (i, j) of the vertices of each edge.
+        """
+        num_inst = dist_mat.shape[0]
+
+        node_id_i = np.zeros(max(num_inst - 1, 0), dtype=int)
+        node_id_j = np.zeros(max(num_inst - 1, 0), dtype=int)
+
+        if num_inst <= 1:
+            return node_id_i, node_id_j
+
+        in_tree = np.zeros(num_inst, dtype=bool)
+        in_tree[0] = True
+
+        # Note: smallest distance from each vertex to the current tree, and
+        # the tree vertex which provides it.
+        min_dist = np.array(dist_mat[0], dtype=float)
+        min_dist[0] = np.inf
+        parent = np.zeros(num_inst, dtype=int)
+
+        for ind in range(num_inst - 1):
+            new_node = int(np.argmin(min_dist))
+
+            node_id_i[ind] = parent[new_node]
+            node_id_j[ind] = new_node
+
+            in_tree[new_node] = True
+            min_dist[new_node] = np.inf
+
+            new_dists = dist_mat[new_node]
+            to_update = np.logical_and(new_dists < min_dist, ~in_tree)
+            min_dist[to_update] = new_dists[to_update]
+            parent[to_update] = new_node
+
+        return node_id_i, node_id_j
 
     @classmethod
     def _build_adjacency_graph(
@@ -1602,16 +1655,10 @@ class MFEComplexity:
 
         _norm_dist_mat = np.asarray(norm_dist_mat)
 
-        # Compute the minimum spanning tree using Kruskal's Minimum
-        # Spanning Tree algorithm.
-        # Note: in the paper, the authors used Prim's algorithm.
-        # Our implementation may change it in a future version due to
-        # time complexity advantages of Prim's algorithm in this context.
-        mst = scipy.sparse.csgraph.minimum_spanning_tree(
-            csgraph=np.triu(_norm_dist_mat, k=1), overwrite=True
-        )
-
-        node_id_i, node_id_j = np.nonzero(mst)
+        # Compute the minimum spanning tree using Prim's algorithm (as in
+        # the paper), which is O(n^2) for the complete graph induced by the
+        # pairwise distance matrix.
+        node_id_i, node_id_j = cls._calc_mst_edges(_norm_dist_mat)
 
         # Which edges have nodes with different class
         which_have_diff_cls = y[node_id_i] != y[node_id_j]
@@ -1937,7 +1984,7 @@ class MFEComplexity:
         ).fit(norm_dist_mat, y)
 
         if metric == "gower":
-            test_dist = gower.gower_matrix(N_interpol, N_scaled)
+            test_dist = cls._calc_gower_dist(N_interpol, N_scaled)
 
         else:
             test_dist = scipy.spatial.distance.cdist(

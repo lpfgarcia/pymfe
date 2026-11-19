@@ -57,7 +57,6 @@ INSTALL_REQUIRES = [
     "texttable",
     "tqdm",
     "igraph>=0.10.1",
-    "gower",
 ]
 
 
